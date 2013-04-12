@@ -1,0 +1,322 @@
+<%= error_messages_for 'task' %>
+<%
+
+  perms = {}
+
+  ['comment', 'edit', 'reassign', 'prioritize', 'close', 'milestone'].each do |p|
+    if @task.project_id.to_i == 0 || current_user.can?( @task.project, p )
+      perms[p] = {}
+    else
+      perms[p] = { :disabled => 'disabled' }
+    end
+  end
+
+%>
+
+<!--[form:task]-->
+
+<tr>
+    <td valign="top">
+      <fieldset id="task_information" style="padding-right:0.5em;"><legend><%=_ 'Information' %></legend>
+        <label for="task_name"><%=_ 'Summary' %></label>
+        <%= text_field 'task', 'name', { :size => 47, :maxlength => 200, :style => "width:80%;"}.merge( perms['edit'] )  %><br />
+        <label for="task_set_tags"><%=_ 'Tags' %></label>
+        <%= text_field 'task', 'set_tags', { :size => 47, :value => @task.tags.collect{|t| t.name}.join(', '), :autocomplete => "off", :style => "width:80%;" }.merge( perms['edit'] ) %> <br />
+        <div class="auto_complete" id="task_set_tags_auto_complete" style="display:none;"></div>
+        <label for="task_description"><%=_ 'Description' %></label>
+        <%= text_area 'task', 'description', { :rows => 20, :style => "width:80%;" }.merge( perms['edit'] )  %> <br />
+        <label for="comment"><%=_ 'Comment' %></label>
+        <%= text_area_tag 'comment', {}, { :rows => 10, :style => "width:80%;" }.merge( perms['comment'] )  %> <br />
+        <label for="task_tmp_file"><%=_ 'Attach file' %></label>
+        <%= file_field_tag 'task_file', { :size => 35, :class => "file" }.merge( perms['comment'] ) %> <br />
+      </fieldset>
+<% unless @tags.nil? %>
+<script type="text/javascript">
+new Autocompleter.Local('task_set_tags', 'task_set_tags_auto_complete', [<%= @tags.collect {|t| "'#{t[0].gsub(/'/, "\\\\\'")}'"}.join(', ') %>], {tokens:[','], minChars:0, frequency: 0, choices: 15});
+</script>
+<% end %>
+    </td>
+    <td valign="top" rowspan="2" style="width:22em;">
+          <% if @task.project_id > 0
+               selected_project = @task.project_id
+             elsif session[:last_project_id].to_i > 0
+               selected_project = session[:last_project_id].to_i
+             elsif session[:filter_project].to_i > 0
+               selected_project = session[:filter_project].to_i
+             else
+               selected_project = current_user.projects.find(:first, :order => 'name').id
+             end
+
+             @project = current_user.projects.find(selected_project) rescue begin
+                                                                      @project = current_user.projects.find(:first, :order => 'name').id
+                                                                     end
+
+             selected_project = @project.id
+
+            %>
+      <fieldset id="task_project_selection" style="padding-right:0;">
+        <legend><%=_ 'Target' %></legend>
+          <label for="task_project_id"><%=_ 'Project' %></label>
+
+          <select name="task[project_id]" id="task_project_id" <%= "disabled=\"disabled\"" unless perms['reassign'].empty? %>>
+          <% @clients = Customer.find(:all, :conditions => ["company_id = ?", current_user.company_id], :order => "name") %>
+          <% @clients.each do |c| %>
+          <% @client_projects = current_user.projects.find(:all, :conditions => ["customer_id = #{c.id} AND completed_at IS NULL"], :order => "name" ) %>
+            <% if @client_projects.size > 0 %>
+            <optgroup class="select_heading" label="<%= h(c.name) %>">
+              <% @client_projects.each do |p| %>
+                 <option value="<%=p.id%>" class="select_item"<%= " selected" if p.id == selected_project%>><%= p.name %></option>
+              <% end %>
+            </optgroup>
+           <% end %>
+
+          <% end %>
+
+           </select>
+           <br/>
+
+          <script type="text/javascript">
+//<![CDATA[
+new Form.Element.EventObserver('task_project_id', function(element, value) {new Ajax.Updater('task_milestone_id', '/tasks/get_milestones', {asynchronous:true, evalScripts:true, onComplete:function(request){Element.hide('loading');}, onLoading:function(request){Element.show('loading');}, parameters:'project_id=' + value, insertion: updateSelect })});
+new Form.Element.EventObserver('task_project_id', function(element, value) {new Ajax.Updater('task_users', '/tasks/get_owners', {asynchronous:true, evalScripts:true, onComplete:function(request){reset_owners();}, parameters:'project_id=' + value, insertion: updateSelect, onLoading:function(request){ remember_user(); } })});
+//]]>
+</script>
+
+          <label for="task_milestone_id"><%=_ 'Milestone' %></label>
+          <% unless @task.id.nil? %>
+            <%= select 'task', 'milestone_id', [[_("[None]"), "0"]] + Milestone.find(:all, :order => 'name', :conditions => ['company_id = ? AND project_id = ? AND completed_at IS NULL', current_user.company.id, selected_project] ).collect {|c| [ c.name, c.id ] }, {}, perms['milestone'] %><br/>
+          <% else %>
+            <%= select'task', 'milestone_id', [[_("[None]"), "0"]] + Milestone.find(:all, :order => 'name', :conditions => ['company_id = ? AND project_id = ? AND completed_at IS NULL', current_user.company.id, selected_project] ).collect {|c| [ c.name, c.id ] }, {:selected => session[:filter_milestone] ? session[:filter_milestone].to_i : 0}, perms['milestone'] %><br/>
+          <% end %>
+
+<%
+
+users = Project.find(selected_project).users.find(:all, :order => 'name' ) rescue [] 
+
+resource_string = "<select id=\"task_users\" name=\"users[]\" #{"disabled=\"disabled\"" if @task.project && !current_user.can?( @task.project, 'reassign' )}><option value=\"\">[#{_('Unassigned')}]</option>" + users.collect{|us| "<option value=\"#{us.id}\">#{us.name}</option>"}.join('') + "</select>"
+resource_string = resource_string.split(/\n/).join('').gsub(/'/, "\\\\\'")
+
+owner_string = ''
+num = 0
+unless @task.users.empty?
+  @task.users.each do |u|
+    owner_string << "<div id=\"owner_#{num}\"><label for=\"dummy\">#{_('Assigned To')}</label>" if num == 0
+    owner_string << "<div id=\"owner_#{num}\"><label for=\"dummy\"></label>" if num != 0
+    owner_string <<  "<select name=\"users[]\" id=\"task_users\" #{"disabled=\"disabled\"" if @task.project && !current_user.can?( @task.project, 'reassign' )}><option value=\"\">[#{_('No one')}]</option>" + users.collect{|us| "<option value=\"#{us.id}\" #{(u.id == us.id ? "selected=\"selected\"" : '')}>#{us.name}</option>"}.join('').gsub(/'/,"\\\\\'") + "</select>" #, perms['reassign'] )
+
+    if( perms['reassign'].keys.size == 0 )
+      owner_string << "<a href=\"#\" onclick=\"javascript:add_owner();return false;\"><img src=\"/images/user_add.png\" border=\"0\" style=\"padding:0;margin:0;\"/></a>" if num == 0
+      owner_string << "<a href=\"#\" onclick=\"javascript:new Element.remove('owner_#{num}');return false;\"><img src=\"/images/user_delete.png\" border=\"0\" style=\"padding:0;margin:0;\"/></a>" if num != 0
+    end
+    owner_string << "</div>"
+    num = num + 1
+  end
+  owner_string = owner_string.split(/\n/).join('')
+else
+  owner_string = "<select name=\"users[]\" id=\"task_users\" #{"disabled=\"disabled\"" if @task.project && !current_user.can?( @task.project, 'reassign' )}><option value=\"\">[#{_('No one')}]</option>" + users.collect{|us| "<option value=\"#{us.id}\" #{"selected" if (us.id == current_user.id && @task.created_at.nil?) }>#{us.name}</option>"}.join('') + "</select>" #, perms['reassign']
+  owner_string = owner_string.split(/\n/).join('').gsub(/'/, "\\\\\'")
+
+  if perms['reassign'].keys.size == 0
+    owner_string = "<div id=\"owner_#{num}\"><label for=\"dummy\">#{_('Assigned To')}</label>#{owner_string}"
+    owner_string << "<a href=\"#\" onclick=\"javascript:add_owner();return false;\"><img src=\"/images/user_add.png\" border=\"0\" style=\"padding:0;margin:0;\"/></a></div>"
+  end
+  num = num + 1
+end
+
+
+
+%>
+
+<script type="text/javascript">
+var num = <%=num%>;
+var resource = '<%= resource_string %>';
+var selected_user = "0";
+function add_owner() {
+        new Insertion.Before("owner_separator", '<div id="owner_' + num + '"><label for="dummy"></label>' + resource + '<a href="#" onclick="javascript:new Element.remove(\'owner_' + num + '\');return false;"><img src="/images/user_delete.png" border="0" style="padding:0;margin:0;"/></a></div>');
+        num = num + 1;
+}
+
+function remember_user() {
+
+  for( var i = 1; i < num; i++ ) {
+      if( $("owner_" + i) ) {
+         new Element.remove("owner_" + i);
+      }
+  }
+
+  var element = $('task_users');
+  if( typeof element == 'array' ) {
+     selected_user = "0"
+   } else {
+     selected_user = element.value
+   }
+
+
+}
+
+function reset_owners() {
+  for( var i = 1; i < num; i++ ) {
+      if( $("owner_" + i) ) {
+         new Element.remove("owner_" + i);
+      }
+  }
+  $('task_users').value = selected_user;
+}
+</script>
+
+       <%= owner_string %>
+      <div id="owner_separator"></div>
+      <label for="task_requested_by"><%=_ 'Requested By' %></label>
+      <%= text_field 'task', 'requested_by', {:size => 12}.merge(perms['edit']) %><br/>
+      </fieldset>
+
+
+      <fieldset id="task_attr" style="padding-right:0;">
+        <legend><%=_ 'Attributes' %></legend>
+      <label for="task_type_id"><%=_ 'Type' %></label>
+        <%= select 'task', 'type_id', [[_('Task'),0],[_('New Feature'),1],[_('Defect'),2],[_('Improvement'),3]], {:selected => @task.type_id}, perms['prioritize']  %><br/>
+        <label for="task_priority"><%=_ 'Priority' %></label>
+        <%= select 'task', 'priority', [[_('Critical'),3],[_('Urgent'),2],[_('High'),1],[_('Normal'),0],[_('Low'),-1],[_('Lowest'),-2]], {:selected => @task.priority}, perms['prioritize']  %><br/>
+      <label for="task_severity_id"><%=_ 'Severity' %></label>
+        <%= select 'task', 'severity_id', [[_('Blocker'),3],[_('Critical'),2],[_('Major'),1],[_('Normal'),0],[_('Minor'),-1],[_('Trivial'),-2]], {:selected => @task.severity_id}, perms['prioritize']  %><br/>
+      <% if current_user.option_tracktime.to_i == 1%>
+       <label for="task_duration"><%=_ 'Time Estimate' %></label>
+      <%= text_field 'task', 'duration', {:size => 12, :value => (@task.duration.to_i > 0 ? worked_nice(@task.duration) : ""), :class => 'tooltip', :title => '2w 3d 1h'}.merge(perms['prioritize']) %><br/>
+<% else %>
+    <%= hidden_field_tag "task[duration]", "1h" %>
+<% end %>
+      <label for="task_due_at"><%=_ 'Due Date' %></label>
+        <% if perms['prioritize'].empty? %>
+          <% if( (current_user.locale || 'en_US') == 'en_US' )
+               date_tooltip = _("Enter task due date, or click calendar button.<br/>For recurring tasks, try:<br/>every day<br/>every thursday<br/>every last friday<br/>every 14 days<br/>every 3rd monday <em>(of a month)</em>")
+             else
+               date_tooltip = _("Enter task due date, or click calendar button.")
+             end %>
+          <% if @task.repeat && @task.repeat.length > 0 %>
+          <%= calendar_field 'task', 'due_at', { :class => 'date tooltip', :field_title => date_tooltip, :button_title => _('Show Calendar'), :value => @task.repeat_summary },
+          { :ifFormat => current_user.date_format, :firstDay => 1, :range => [2006, 2010], :step => 1, :showOthers => true } %>
+          <% else %>
+          <%= calendar_field 'task', 'due_at', { :class => 'date tooltip', :field_title => date_tooltip, :button_title => _('Show Calendar') },
+          { :ifFormat => current_user.date_format, :firstDay => 1, :range => [2006, 2010], :step => 1, :showOthers => true } %>
+          <% end %>
+          <br/>
+        <% else %>
+          <% if @task.repeat && @task.repeat.length > 0 %>
+        <%= text_field 'task', 'due_at', {:size => 12, :value => @task.repeat_summary}.merge(perms['prioritize']) %><br/>
+          <% else %>
+        <%= text_field 'task', 'due_at', {:size => 12}.merge(perms['prioritize']) %><br/>
+          <% end %>
+        <% end %>
+
+      </fieldset>
+
+      <fieldset id="task_dependencies" style="padding-right:0;">
+        <legend><%=_ "Dependencies"%></legend>
+
+        <label for="dependencies_input"><%=_ 'Depends on'%> #</label>
+        <% if perms['prioritize'].empty? %>
+        <input name="dependencies[]" size="12" type="text" id="dependencies_input" title="<%=_("Enter task numbers, separated by commas. Type text to search.")%>" class="tooltip" >
+        <div style="clear:both; display:none;" id="dependencies_input_auto_complete"></div>
+        <%= auto_complete_field 'dependencies_input', { :url => { :action => 'dependency_targets' }, :min_chars => 1, :frequency => 0.5, :indicator => 'loading', :select => 'complete_value', :tokens => ',' } %>
+        <% else %>
+        <input name="dependencies[]" size="12" type="text" disabled="disabled">
+        <% end %>
+
+        <div id="dep_separator"></div>
+
+        <% @task.dependencies.each do |d| %>
+
+        <div id="dep_<%=d.id%>" style="clear:both;">
+        <div style="float:left;"><% if d.done? %><img src="/images/tick.png" border=0><% else %><img src="/images/spacer.gif" width="16px"><% end %><%= link_to_task(d) %></div>
+        <% if perms['prioritize'].empty? %>
+               <div style="float:right;"><a href="#" onclick="javascript:new Element.remove('dep_<%=d.id%>'); false;" ><img src="/images/delete.png" border="0" title="<%=_ 'Remove dependency'%>" class="tooltip"></a></div>
+        <% end %>
+        <input name="dependencies[]" type="hidden" value="<%=d.task_num%>">
+        </div>
+        <% end %>
+
+      </fieldset>
+
+<% unless @task.dependants.empty? %>
+
+      <fieldset id="task_dependants" style="padding-right:0;">
+        <legend><%=_ "Depended on by"%></legend>
+
+        <% @task.dependants.each do |d| %>
+
+        <div id="dep_<%=d.id%>" style="clear:both;">
+        <div style="float:left;"><% if d.done? %><img src="/images/tick.png" border=0><% else %><img src="/images/spacer.gif" width="16px"><% end %><%= link_to_task(d) %></div>
+        </div>
+        <% end %>
+
+      </fieldset>
+
+
+<% end %>
+
+      <fieldset id="task_notify" style="padding-right:0;">
+        <legend><%=_ 'Notification' %></legend>
+        <label for="notification-input"><%= _"Name / Email" %></label><input type="text" size="12" name="watchers[]" id="notification-input">
+        <div style="clear:both; display:none;" id="notification-autocomplete"></div>
+        <div style="clear:both;" id="notifications"></div>
+<script type="text/javascript">
+var watchers = <%= @task.watchers.size + (@task.notify_emails.nil? ? 0 : @task.notify_emails.count(',')) %>;
+
+function updateList(text) {
+   new Insertion.Top($('notifications'), '<div id="watcher-' + watchers + '" class="notify-row"><div class="notify-user">' + text + '</div><div style="float:right;"><a href="#" onclick="javascript:new Element.remove(\'watcher-' + watchers + '\');false"><img src="/images/accept.png" border="0" title="<%=_ 'Remove notification'%>" class="tooltip"></a></div><input type="hidden" name="watchers[]" value="' + text + '" /></div>' );
+   watchers += 1;
+}
+
+function addNotification(el) {
+   updateList(Element.collectTextNodesIgnoreClass(el, 'informal'));
+   $('notification-input').clear();
+   return false;
+}
+
+function maybeAddNotification(event) {
+      switch(event.keyCode) {
+       case Event.KEY_TAB:
+       case Event.KEY_RETURN:
+          if($('notification-input').value.length > 0 && !$('notification-autocomplete').visible() ) {
+             updateList($('notification-input').value);
+             $('notification-input').clear();
+             Event.stop(event);
+          }
+     }
+}
+
+Event.observe($('notification-input'), "keypress", maybeAddNotification);
+
+new Autocompleter.Local('notification-input', 'notification-autocomplete', [<%= @notify_targets.collect {|n| "'#{n.gsub(/'/, "\\\\\'")}'"}.join(', ') %>], {tokens:[','], minChars:1, frequency: 0, choices: 15, fullSearch:true, updateElement:addNotification});
+
+<% if @task.notify_emails %>
+  <% @task.notify_emails.split(',').sort.each do |w| %>
+updateList('<%= w.gsub(/'/, "\\\\\'") %>');
+  <% end %>
+<% end %>
+<% @task.watchers.collect(&:name).sort.each do |w| %>
+updateList('<%= w.gsub(/'/, "\\\\\'") %>');
+<% end %>
+
+
+</script>
+
+      </fieldset>
+
+      <% if @task.attachments.size > 0 %>
+      <fieldset id="task_attachments">
+        <legend><%=_ "Attachments" %></legend>
+
+        <% for file in @task.attachments %>
+        <%= link_to h(file.name), {:controller => 'project_files', :action => 'download', :id => file.id} %> (<%=number_to_human_size(file.file_size)%>)
+        <%= link_to _('[Delete]'), {:controller => 'project_files', :action => 'destroy', :id => file.id}, :confirm => _("Really delete %s?", file.name) %>
+        <br/>
+        <% end %>
+      </fieldset>
+      <% end %>
+    </td>
+</tr>
+
+
+
+<!--[eoform:task]-->

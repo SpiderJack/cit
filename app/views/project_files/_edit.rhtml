@@ -1,0 +1,15 @@
+<fieldset id="edit_file">
+<legend>Editing Project File</legend>
+
+<% form_remote_tag :url => {:action => 'update', :id => @file },
+                                   :loading => "Element.show('loading');",
+                                   :complete => "Element.hide('loading');" do  %>
+  <%= render :partial => "form_edit" %>
+  <%= submit_tag _("Update"), :style => 'margin-left:11.6em;' %>
+    <div style="padding-top:0.2em;"> <%= _("or") %>
+    <%= link_to_function _("Cancel") do |page|
+          page.hide 'inline_form'
+        end
+    %></div>
+<% end %>
+</fieldset>
